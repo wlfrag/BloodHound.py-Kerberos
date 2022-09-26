@@ -42,6 +42,8 @@ from future.utils import itervalues, iteritems, native_str
 """
 Active Directory Domain Controller
 """
+
+
 class ADDC(ADComputer):
     def __init__(self, hostname=None, ad=None):
         ADComputer.__init__(self, hostname)
@@ -67,7 +69,7 @@ class ADDC(ADComputer):
         for r in q:
             ip = r.address
 
-        ldap = self.ad.auth.getLDAPConnection(hostname=ip,
+        ldap = self.ad.auth.getLDAPConnection(hostname=self.hostname, ip=ip,
                                               baseDN=self.ad.baseDN, protocol=protocol)
         if resolver:
             self.resolverldap = ldap
@@ -87,7 +89,7 @@ class ADDC(ADComputer):
             try:
                 initial_server = self.ad.gcs()[0]
             except IndexError:
-                logging.error('Could not find a Global Catalog in this domain!'\
+                logging.error('Could not find a Global Catalog in this domain!'
                               ' Resolving will be unreliable in forests with multiple domains')
                 return False
         try:
@@ -113,7 +115,7 @@ class ADDC(ADComputer):
                 except (resolver.NXDOMAIN, resolver.Timeout):
                     continue
 
-        self.gcldap = self.ad.auth.getLDAPConnection(hostname=ip, gc=True,
+        self.gcldap = self.ad.auth.getLDAPConnection(hostname=server, ip=ip, gc=True,
                                                      baseDN=self.ad.baseDN, protocol=protocol)
         return self.gcldap is not None
 
@@ -164,20 +166,22 @@ class ADDC(ADComputer):
                 yield e
         except LDAPNoSuchObjectResult:
             # This may indicate the object doesn't exist or access is denied
-            logging.warning('LDAP Server reported that the search in %s for %s does not exist.', search_base, search_filter)
+            logging.warning(
+                'LDAP Server reported that the search in %s for %s does not exist.', search_base, search_filter)
         except (LDAPSocketReceiveError, LDAPSocketSendError) as e:
             if is_retry:
-                logging.error('Connection to LDAP server lost during data gathering - reconnect failed - giving up on query %s', search_filter)
+                logging.error(
+                    'Connection to LDAP server lost during data gathering - reconnect failed - giving up on query %s', search_filter)
             else:
                 if hadresults:
-                    logging.error('Connection to LDAP server lost during data gathering. Query was cut short. Data may be inaccurate for query %s', search_filter)
+                    logging.error(
+                        'Connection to LDAP server lost during data gathering. Query was cut short. Data may be inaccurate for query %s', search_filter)
                     self.ldap_connect(resolver=use_resolver)
                 else:
                     logging.warning('Re-establishing connection with server')
                     self.ldap_connect(resolver=use_resolver)
                     # Try again
                     yield from self.search(search_filter, attributes, search_base, generator, use_gc, use_resolver, query_sd, is_retry=True)
-
 
     def ldap_get_single(self, qobject, attributes=None, use_gc=False, use_resolver=False):
         """
@@ -204,7 +208,8 @@ class ADDC(ADComputer):
                                                             generator=False)
         except LDAPNoSuchObjectResult:
             # This may indicate the object doesn't exist or access is denied
-            logging.warning('LDAP Server reported that the object %s does not exist.', qobject)
+            logging.warning(
+                'LDAP Server reported that the object %s does not exist.', qobject)
             return None
         for e in sresult:
             if e['type'] != 'searchResEntry':
@@ -218,14 +223,14 @@ class ADDC(ADComputer):
 
         return entries
 
-
     def get_netbios_name(self, context):
         try:
             entries = self.search('(ncname=%s)' % context,
                                   ['nETBIOSName'],
                                   search_base="CN=Partitions,%s" % self.ldap.server.info.other['configurationNamingContext'][0])
         except (LDAPAttributeError, LDAPCursorError) as e:
-            logging.warning('Could not determine NetBiosname of the domain: %s', str(e))
+            logging.warning(
+                'Could not determine NetBiosname of the domain: %s', str(e))
         return next(entries)
 
     def get_objecttype(self):
@@ -243,7 +248,8 @@ class ADDC(ADComputer):
         for res in sresult:
             if res['attributes']['schemaIDGUID']:
                 guid = str(UUID(bytes_le=res['attributes']['schemaIDGUID']))
-                self.objecttype_guid_map[res['attributes']['name'].lower()] = guid
+                self.objecttype_guid_map[res['attributes']
+                                         ['name'].lower()] = guid
 
         if 'ms-mcs-admpwdexpirationtime' in self.objecttype_guid_map:
             logging.debug('Found LAPS attributes in schema')
@@ -271,11 +277,13 @@ class ADDC(ADComputer):
             entriesNum += 1
             # Todo: actually use these objects instead of discarding them
             # means rewriting other functions
-            domain_object = ADDomain.fromLDAP(entry['attributes']['distinguishedName'], entry['attributes']['objectSid'])
+            domain_object = ADDomain.fromLDAP(
+                entry['attributes']['distinguishedName'], entry['attributes']['objectSid'])
             self.ad.domain_object = domain_object
             self.ad.domains[entry['attributes']['distinguishedName']] = entry
             try:
-                nbentry = self.get_netbios_name(entry['attributes']['distinguishedName'])
+                nbentry = self.get_netbios_name(
+                    entry['attributes']['distinguishedName'])
                 self.ad.nbdomains[nbentry['attributes']['nETBIOSName']] = entry
             except IndexError:
                 pass
@@ -294,7 +302,8 @@ class ADDC(ADComputer):
         """
         entries = self.search('(objectClass=crossRef)',
                               ['nETBIOSName', 'systemFlags', 'nCName', 'name'],
-                              search_base="CN=Partitions,%s" % self.ldap.server.info.other['configurationNamingContext'][0],
+                              search_base="CN=Partitions,%s" % self.ldap.server.info.other[
+                                  'configurationNamingContext'][0],
                               generator=True)
 
         entriesNum = 0
@@ -333,7 +342,8 @@ class ADDC(ADComputer):
             entries = self.search(query,
                                   use_gc=True,
                                   use_resolver=True,
-                                  attributes=['sAMAccountName', 'distinguishedName', 'sAMAccountType', 'objectSid', 'name'],
+                                  attributes=[
+                                      'sAMAccountName', 'distinguishedName', 'sAMAccountType', 'objectSid', 'name'],
                                   search_base=nc,
                                   generator=True)
             for lentry in entries:
@@ -343,11 +353,13 @@ class ADDC(ADComputer):
                     "ObjectType": resolved_entry['type'].capitalize()
                 }
                 sidcache[resolved_entry['objectid']] = cacheitem
-                dncache[ADUtils.get_entry_property(lentry, 'distinguishedName').upper()] = cacheitem
+                dncache[ADUtils.get_entry_property(
+                    lentry, 'distinguishedName').upper()] = cacheitem
         return dncache, sidcache
 
     def get_groups(self, include_properties=False, acl=False):
-        properties = ['distinguishedName', 'samaccountname', 'samaccounttype', 'objectsid', 'member']
+        properties = ['distinguishedName', 'samaccountname',
+                      'samaccounttype', 'objectsid', 'member']
         if include_properties:
             properties += ['adminCount', 'description', 'whencreated']
         if acl:
@@ -357,7 +369,6 @@ class ADDC(ADComputer):
                               generator=True,
                               query_sd=acl)
         return entries
-
 
     def get_users(self, include_properties=False, acl=False):
 
@@ -388,7 +399,6 @@ class ADDC(ADComputer):
                               query_sd=acl)
         return entries
 
-
     def get_computers(self, include_properties=False, acl=False):
         """
         Get all computer objects. This purely gets them using LDAP. This function is used directly in case of DCOnly enum,
@@ -409,7 +419,8 @@ class ADDC(ADComputer):
         if acl:
             # Also collect LAPS expiration time since this matters for reporting (no LAPS = no ACL reported)
             if self.ad.has_laps:
-                properties += ['nTSecurityDescriptor', 'ms-mcs-admpwdexpirationtime']
+                properties += ['nTSecurityDescriptor',
+                               'ms-mcs-admpwdexpirationtime']
             else:
                 properties.append('nTSecurityDescriptor')
         entries = self.search('(&(sAMAccountType=805306369)(!(UserAccountControl:1.2.840.113556.1.4.803:=2)))',
@@ -436,10 +447,13 @@ class ADDC(ADComputer):
                 "ObjectIdentifier": resolved_entry['objectid'],
                 "ObjectType": resolved_entry['type'].capitalize()
             }
-            self.ad.dncache[ADUtils.get_entry_property(entry, 'distinguishedName', '').upper()] = cacheitem
+            self.ad.dncache[ADUtils.get_entry_property(
+                entry, 'distinguishedName', '').upper()] = cacheitem
             # This list is used to process computers later on
-            self.ad.computers[ADUtils.get_entry_property(entry, 'distinguishedName', '')] = entry
-            self.ad.computersidcache.put(ADUtils.get_entry_property(entry, 'dNSHostname', '').lower(), entry['attributes']['objectSid'])
+            self.ad.computers[ADUtils.get_entry_property(
+                entry, 'distinguishedName', '')] = entry
+            self.ad.computersidcache.put(ADUtils.get_entry_property(
+                entry, 'dNSHostname', '').lower(), entry['attributes']['objectSid'])
 
         logging.info('Found %u computers', entriesNum)
 
@@ -460,7 +474,8 @@ class ADDC(ADComputer):
 
     def get_trusts(self):
         entries = self.search('(objectClass=trustedDomain)',
-                              attributes=['flatName', 'name', 'securityIdentifier', 'trustAttributes', 'trustDirection', 'trustType'],
+                              attributes=['flatName', 'name', 'securityIdentifier',
+                                          'trustAttributes', 'trustDirection', 'trustType'],
                               generator=True)
         return entries
 
@@ -478,6 +493,8 @@ class ADDC(ADComputer):
 """
 Active Directory data and cache
 """
+
+
 class AD(object):
 
     def __init__(self, domain=None, auth=None, nameserver=None, dns_tcp=False, dns_timeout=3.0):
@@ -495,10 +512,10 @@ class AD(object):
 
         self.domains = {}
         self.nbdomains = {}
-        self.groups = {} # Groups by DN
-        self.groups_dnmap = {} # Group mapping from gid to DN
+        self.groups = {}  # Groups by DN
+        self.groups_dnmap = {}  # Group mapping from gid to DN
         self.computers = {}
-        self.users = {} # Users by DN
+        self.users = {}  # Users by DN
 
         # Create a resolver object
         self.dnsresolver = resolver.Resolver()
@@ -561,17 +578,7 @@ class AD(object):
     def create_objectresolver(self, addc):
         self.objectresolver = ObjectResolver(addomain=self, addc=addc)
 
-    def load_cachefile(self, cachefile):
-        with codecs.open(cachefile, 'r', 'utf-8') as cfile:
-            cachedata = json.load(cfile)
-        self.dncache = cachedata['dncache']
-        self.newsidcache.load(cachedata['sidcache'])
-        logging.info('Loaded cached DNs and SIDs from cachefile')
-
-    def save_cachefile(self, cachefile):
-        pass
-
-    def dns_resolve(self, domain=None, kerberos=True, options=None):
+    def dns_resolve(self, domain=None):
         logging.debug('Querying domain controller information from DNS')
 
         basequery = '_ldap._tcp.pdc._msdcs'
@@ -607,7 +614,8 @@ class AD(object):
             pass
 
         try:
-            q = self.dnsresolver.query(query.replace('pdc','gc'), 'SRV', tcp=self.dns_tcp)
+            q = self.dnsresolver.query(query.replace(
+                'pdc', 'gc'), 'SRV', tcp=self.dns_tcp)
             for r in q:
                 gc = str(r.target).rstrip('.')
                 logging.debug('Found Global Catalog server: %s' % gc)
@@ -616,28 +624,29 @@ class AD(object):
 
         except resolver.NXDOMAIN:
             # Only show warning if we don't already have a GC specified manually
-            if options and not options.global_catalog:
-                if not options.disable_autogc:
-                    logging.warning('Could not find a global catalog server, assuming the primary DC has this role\n'
-                                    'If this gives errors, either specify a hostname with -gc or disable gc resolution with --disable-autogc')
-                    self._gcs = self._dcs
-                else:
-                    logging.warning('Could not find a global catalog server. Please specify one with -gc')
+            # if options and not options.global_catalog:
+            #     if not options.disable_autogc:
+            #         logging.warning('Could not find a global catalog server, assuming the primary DC has this role\n'
+            #                         'If this gives errors, either specify a hostname with -gc or disable gc resolution with --disable-autogc')
+            #         self._gcs = self._dcs
+            #     else:
+            #         logging.warning('Could not find a global catalog server. Please specify one with -gc')
+            pass
 
-        if kerberos is True:
-            try:
-                q = self.dnsresolver.query('_kerberos._tcp.dc._msdcs', 'SRV', tcp=self.dns_tcp)
-                for r in q:
-                    kdc = str(r.target).rstrip('.')
-                    logging.debug('Found KDC: %s' % str(r.target).rstrip('.'))
-                    if kdc not in self._kdcs:
-                        self._kdcs.append(kdc)
-                        self.auth.kdc = self._kdcs[0]
-            except resolver.NXDOMAIN:
-                pass
+        try:
+            kquery = query.replace('pdc', 'dc').replace('_ldap', '_kerberos')
+            q = self.dnsresolver.query(kquery, 'SRV', tcp=self.dns_tcp)
+            # TODO: Get the additional records here to get the DC ip immediately
+            for r in q:
+                kdc = str(r.target).rstrip('.')
+                logging.debug('Found KDC: %s' % str(r.target).rstrip('.'))
+                if kdc not in self._kdcs:
+                    self._kdcs.append(kdc)
+                    self.auth.kdc = self._kdcs[0]
+        except resolver.NXDOMAIN:
+            pass
 
         return True
-
 
     def get_domain_by_name(self, name):
         for domain, entry in iteritems(self.domains):
@@ -650,16 +659,18 @@ class AD(object):
                 return entry
         return None
 
+
 """
 Active Directory Domain
 """
+
+
 class ADDomain(object):
     def __init__(self, name=None, netbios_name=None, sid=None, distinguishedname=None):
         self.name = name
         self.netbios_name = netbios_name
         self.sid = sid
         self.distinguishedname = distinguishedname
-
 
     @staticmethod
     def fromLDAP(identifier, sid=None):
