@@ -42,6 +42,8 @@ from impacket.spnego import SPNEGO_NegTokenInit, TypesMech
 """
 Active Directory authentication helper
 """
+
+
 class ADAuthentication(object):
     def __init__(self, username='', password='', domain='',
                  lm_hash='', nt_hash='', aeskey='', kdc=None):
@@ -80,10 +82,12 @@ class ADAuthentication(object):
         ldaplogin = '%s\\%s' % (self.domain, self.username)
 
         if self.tgt is not None:
-            conn = Connection(server, user=ldaplogin, auto_referrals=False, password=ldappass, authentication=SASL, sasl_mechanism=KERBEROS)
+            conn = Connection(server, user=ldaplogin, auto_referrals=False,
+                              password=ldappass, authentication=SASL, sasl_mechanism=KERBEROS)
             bound = self.ldap_kerberos(conn, hostname)
         else:
-            conn = Connection(server, user=ldaplogin, auto_referrals=False, password=ldappass, authentication=NTLM)
+            conn = Connection(server, user=ldaplogin, auto_referrals=False,
+                              password=ldappass, authentication=NTLM)
             logging.debug('Authenticating to LDAP server')
             bound = conn.bind()
 
@@ -94,17 +98,20 @@ class ADAuthentication(object):
                                 'Trying to connect over LDAPS instead...')
                 return self.getLDAPConnection(hostname, ip, baseDN, 'ldaps')
             else:
-                logging.error('Failure to authenticate with LDAP! Error %s' % result['message'])
+                logging.error(
+                    'Failure to authenticate with LDAP! Error %s' % result['message'])
                 return None
         return conn
 
     def ldap_kerberos(self, connection, hostname):
         # Hackery to authenticate with ldap3 using impacket Kerberos stack
 
-        username = Principal(self.username, type=constants.PrincipalNameType.NT_PRINCIPAL.value)
-        servername = Principal('ldap/%s' % hostname, type=constants.PrincipalNameType.NT_SRV_INST.value)
+        username = Principal(
+            self.username, type=constants.PrincipalNameType.NT_PRINCIPAL.value)
+        servername = Principal(
+            'ldap/%s' % hostname, type=constants.PrincipalNameType.NT_SRV_INST.value)
         tgs, cipher, _, sessionkey = getKerberosTGS(servername, self.domain, self.kdc,
-                                                                self.tgt['KDC_REP'], self.tgt['cipher'], self.tgt['sessionKey'])
+                                                    self.tgt['KDC_REP'], self.tgt['cipher'], self.tgt['sessionKey'])
 
         # Let's build a NegTokenInit with a Kerberos AP_REQ
         blob = SPNEGO_NegTokenInit()
@@ -141,7 +148,8 @@ class ADAuthentication(object):
         # AP-REQ Authenticator (includes application authenticator
         # subkey), encrypted with the application session key
         # (Section 5.5.1)
-        encryptedEncodedAuthenticator = cipher.encrypt(sessionkey, 11, encodedAuthenticator, None)
+        encryptedEncodedAuthenticator = cipher.encrypt(
+            sessionkey, 11, encodedAuthenticator, None)
 
         apReq['authenticator'] = noValue
         apReq['authenticator']['etype'] = cipher.enctype
@@ -151,8 +159,10 @@ class ADAuthentication(object):
 
         # From here back to ldap3
         connection.open(read_server_info=False)
-        request = bind_operation(connection.version, SASL, None, None, connection.sasl_mechanism, blob.getData())
-        response = connection.post_send_single_response(connection.send('bindRequest', request, None))[0]
+        request = bind_operation(
+            connection.version, SASL, None, None, connection.sasl_mechanism, blob.getData())
+        response = connection.post_send_single_response(
+            connection.send('bindRequest', request, None))[0]
         connection.result = response
         if response['result'] == 0:
             connection.bound = True
@@ -163,10 +173,12 @@ class ADAuthentication(object):
         """
         Request a Kerberos TGT given our provided inputs.
         """
-        username = Principal(self.username, type=constants.PrincipalNameType.NT_PRINCIPAL.value)
+        username = Principal(
+            self.username, type=constants.PrincipalNameType.NT_PRINCIPAL.value)
         logging.info('Getting TGT for user')
         tgt, cipher, _, session_key = getKerberosTGT(username, self.password, self.domain,
-                                                     unhexlify(self.lm_hash), unhexlify(self.nt_hash),
+                                                     unhexlify(self.lm_hash), unhexlify(
+                                                         self.nt_hash),
                                                      self.aeskey,
                                                      self.kdc)
         TGT = dict()
@@ -189,7 +201,8 @@ class ADAuthentication(object):
         if os.path.isfile(krb5cc):
             logging.debug('Using kerberos credential cache: %s', krb5cc)
         else:
-            logging.debug('No Kerberos credential cache file found, manually requesting TGT')
+            logging.debug(
+                'No Kerberos credential cache file found, manually requesting TGT')
             return False
 
         # Load TGT for our domain
@@ -208,14 +221,16 @@ class ADAuthentication(object):
 
         # Verify if this ticket is actually for the specified user
         ticket = Ticket()
-        decoded_tgt = decoder.decode(tgt, asn1Spec = AS_REP())[0]
+        decoded_tgt = decoder.decode(tgt, asn1Spec=AS_REP())[0]
         ticket.from_asn1(decoded_tgt['ticket'])
 
         tgt_principal = Principal()
         tgt_principal.from_asn1(decoded_tgt, 'crealm', 'cname')
-        expected_principal = '%s@%s' % (self.username.lower(), self.domain.upper())
+        expected_principal = '%s@%s' % (self.username.lower(),
+                                        self.domain.upper())
         if expected_principal != str(tgt_principal):
-            logging.warning('Username in ccache file does not match supplied username! %s != %s', tgt_principal, expected_principal)
+            logging.warning('Username in ccache file does not match supplied username! %s != %s',
+                            tgt_principal, expected_principal)
             return False
         else:
             logging.info('Found TGT with correct principal in ccache file.')

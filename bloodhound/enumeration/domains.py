@@ -25,11 +25,12 @@
 import logging
 import codecs
 import json
-from bloodhound.ad.utils import ADUtils
+import calendar
+from bloodhound.ad.utils import ADUtils, AceResolver
 from bloodhound.ad.trusts import ADDomainTrust
+from bloodhound.enumeration.acls import parse_binary_acl
 
-
-class TrustsEnumerator(object):
+class DomainEnumerator(object):
     """
     Class to enumerate trusts in the domain.
     Contains the dumping functions which
@@ -43,12 +44,17 @@ class TrustsEnumerator(object):
         self.addomain = addomain
         self.addc = addc
 
-    def dump_trusts(self, filename='domains.json'):
+    def dump_domain(self, collect, timestamp="", filename='domains.json'):
+
+        filename = timestamp + filename
         """
         Dump trusts. This is currently the only domain info we support, so
         this function handles the entire domain dumping.
         """
-        entries = self.addc.get_trusts()
+        if 'trusts' in collect:
+            entries = self.addc.get_trusts()
+        else:
+            entries = []
 
         try:
             logging.debug('Opening file for writing: %s' % filename)
@@ -63,8 +69,6 @@ class TrustsEnumerator(object):
         else:
             indent_level = None
 
-        logging.debug('Writing trusts to file: %s' % filename)
-
         # Todo: fix this properly. Current code is quick fix to work with domains
         # that have custom casing in their DN
         domain_object = None
@@ -74,15 +78,16 @@ class TrustsEnumerator(object):
                 break
 
         if not domain_object:
-            logging.error('Could not find domain object. Abortint trust enumeration')
+            logging.error('Could not find domain object. Aborting domain enumeration')
             return
 
         # Initialize json structure
         datastruct = {
-            "domains": [],
+            "data": [],
             "meta": {
                 "type": "domains",
-                "count": 0
+                "count": 0,
+                "version":5
             }
         }
         # Get functional level
@@ -92,37 +97,54 @@ class TrustsEnumerator(object):
         except KeyError:
             functional_level = 'Unknown'
 
+        whencreated = ADUtils.get_entry_property(domain_object, 'whencreated', default=0)
+        if not isinstance(whencreated, int):
+            whencreated = calendar.timegm(whencreated.timetuple())
         domain = {
-            "Name": self.addomain.domain,
+            "ObjectIdentifier": domain_object['attributes']['objectSid'],
             "Properties": {
-                "highvalue": True,
-                "objectsid": domain_object['attributes']['objectSid'],
+                "name": self.addomain.domain.upper(),
+                "domain": self.addomain.domain.upper(),
+                "domainsid": ADUtils.get_entry_property(domain_object, 'objectSid'),
+                "distinguishedname": ADUtils.get_entry_property(domain_object, 'distinguishedName').upper(),
                 "description": ADUtils.get_entry_property(domain_object, 'description'),
-                "functionallevel": functional_level
+                "functionallevel": functional_level,
+                "highvalue": True,
+                'whencreated': whencreated
             },
             "Trusts": [],
+            "Aces": [],
             # The below is all for GPO collection, unsupported as of now.
             "Links": [],
-            "Aces": [],
-            "Users": [],
-            "Computers": [],
-            "ChildOus": []
+            "ChildObjects": [],
+            "GPOChanges": {
+                "AffectedComputers": [],
+                "DcomUsers": [],
+                "LocalAdmins": [],
+                "PSRemoteUsers": [],
+                "RemoteDesktopUsers": []
+            },
+            "IsDeleted": False,
         }
 
-        num_entries = 0
-        for entry in entries:
-            num_entries += 1
-            # TODO: self.addomain is currently only a single domain. In multi domain mode
-            # this might need to be updated
-            trust = ADDomainTrust(self.addomain.domain, entry['attributes']['name'], entry['attributes']['trustDirection'], entry['attributes']['trustType'], entry['attributes']['trustAttributes'])
-            domain['Trusts'].append(trust.to_output())
+        if 'acl' in collect:
+            resolver = AceResolver(self.addomain, self.addomain.objectresolver)
+            _, aces = parse_binary_acl(domain, 'domain', ADUtils.get_entry_property(domain_object, 'nTSecurityDescriptor'), self.addc.objecttype_guid_map)
+            domain['Aces'] = resolver.resolve_aces(aces)
 
-        logging.info('Found %u trusts', num_entries)
+        if 'trusts' in collect:
+            num_entries = 0
+            for entry in entries:
+                num_entries += 1
+                trust = ADDomainTrust(ADUtils.get_entry_property(entry, 'name'), ADUtils.get_entry_property(entry, 'trustDirection'), ADUtils.get_entry_property(entry, 'trustType'), ADUtils.get_entry_property(entry, 'trustAttributes'), ADUtils.get_entry_property(entry, 'securityIdentifier'))
+                domain['Trusts'].append(trust.to_output())
+
+            logging.info('Found %u trusts', num_entries)
 
         # Single domain only
         datastruct['meta']['count'] = 1
-        datastruct['domains'].append(domain)
+        datastruct['data'].append(domain)
         json.dump(datastruct, out, indent=indent_level)
 
-        logging.debug('Finished writing trusts')
+        logging.debug('Finished writing domain info')
         out.close()

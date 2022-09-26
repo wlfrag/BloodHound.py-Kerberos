@@ -27,14 +27,18 @@ import traceback
 import codecs
 import json
 
+MAX_ENTRIES = 40000
+
 class OutputWorker(object):
     @staticmethod
-    def write_worker(result_q, computers_filename, session_filename):
+    def write_worker(result_q, computers_filename):
         """
             Worker to write the results from the results_q to the given files.
         """
+
+      
         computers_out = codecs.open(computers_filename, 'w', 'utf-8')
-        sessions_out = codecs.open(session_filename, 'w', 'utf-8')
+        filenumber = 0
 
         # If the logging level is DEBUG, we ident the objects
         if logging.getLogger().getEffectiveLevel() == logging.DEBUG:
@@ -43,10 +47,10 @@ class OutputWorker(object):
             indent_level = None
 
         # Write start of the json file
-        computers_out.write('{"computers":[')
+        computers_out.write('{"data":[')
         num_computers = 0
-        sessions_out.write('{"sessions":[')
-        num_sessions = 0
+        current_num_computers = 0
+
         while True:
             obj = result_q.get()
 
@@ -55,25 +59,94 @@ class OutputWorker(object):
                 break
 
             objtype, data = obj
-            if objtype == 'session':
-                if num_sessions != 0:
-                    sessions_out.write(',')
-                json.dump(data, sessions_out, indent=indent_level)
-                num_sessions += 1
-            elif objtype == 'computer':
-                if num_computers != 0:
+            if objtype == 'computer':
+                if current_num_computers != 0:
                     computers_out.write(',')
-                json.dump(data, computers_out, indent=indent_level)
+                try:
+                    encoded_computer = json.dumps(data, indent=indent_level)
+                    computers_out.write(encoded_computer)
+                except TypeError:
+                    logging.error('Data error {0}, could not convert data to json'.format(repr(data)))
+                    computers_out.write('{}')
                 num_computers += 1
+                current_num_computers += 1
             else:
                 logging.warning("Type is %s this should not happen", objtype)
 
             result_q.task_done()
+            # Loop file if it gets too big
+            if num_computers % MAX_ENTRIES == 0 and num_computers > 0:
+                logging.debug('Rotating output file %s', computers_filename)
+                computers_out.write('],"meta":{"methods":0,"type":"computers","count":%d, "version":5}}' % current_num_computers)
+                computers_out.close()
+                filenumber += 1
+                new_filename = computers_filename.replace('.json', '_%02d.json' % filenumber)
+                computers_out = codecs.open(new_filename, 'w', 'utf-8')
+                current_num_computers = 0
+                computers_out.write('{"data":[')
+
 
         logging.debug('Write worker is done, closing files')
         # Write metadata manually
-        computers_out.write('],"meta":{"type":"computers","count":%d}}' % num_computers)
+        computers_out.write('],"meta":{"methods":0,"type":"computers","count":%d, "version":5}}' % current_num_computers)
         computers_out.close()
-        sessions_out.write('],"meta":{"type":"sessions","count":%d}}' % num_sessions)
-        sessions_out.close()
+        result_q.task_done()
+
+    @staticmethod
+    def membership_write_worker(result_q, enumtype, filename):
+        """
+            Worker to write the results from the results_q to the given file.
+            This is for both users and groups
+        """
+        try:
+            membership_out = codecs.open(filename, 'w', 'utf-8')
+            filenumber = 0
+        except:
+            logging.warning('Could not write file: %s', filename)
+            result_q.task_done()
+            return
+
+        # If the logging level is DEBUG, we ident the objects
+        if logging.getLogger().getEffectiveLevel() == logging.DEBUG:
+            indent_level = 1
+        else:
+            indent_level = None
+
+        # Write start of the json file
+        membership_out.write('{"data":[')
+        num_members = 0
+        current_num_members = 0
+        while True:
+            data = result_q.get()
+
+            if data is None:
+                break
+
+            if current_num_members != 0:
+                membership_out.write(',')
+            try:
+                encoded_member = json.dumps(data, indent=indent_level)
+                membership_out.write(encoded_member)
+            except TypeError:
+                logging.error('Data error {0}, could not convert data to json'.format(repr(data)))
+                membership_out.write('{}')
+            num_members += 1
+            current_num_members += 1
+
+            result_q.task_done()
+            # Loop file if it gets too big
+            if num_members % MAX_ENTRIES == 0 and num_members > 0:
+                logging.debug('Rotating output file %s', filename)
+                membership_out.write('],"meta":{"methods":0,"type":"%s","count":%d, "version":5}}' % (enumtype, current_num_members))
+                membership_out.close()
+                filenumber += 1
+                new_filename = filename.replace('.json', '_%02d.json' % filenumber)
+                membership_out = codecs.open(new_filename, 'w', 'utf-8')
+                current_num_members = 0
+                membership_out.write('{"data":[')
+
+        logging.info('Found %d %s', num_members, enumtype)
+        # Write metadata manually
+        membership_out.write('],"meta":{"methods":0,"type":"%s","count":%d, "version":5}}' % (enumtype, current_num_members))
+        membership_out.close()
         result_q.task_done()

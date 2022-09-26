@@ -21,7 +21,7 @@
 # SOFTWARE.
 #
 ####################
-
+from __future__ import unicode_literals
 import logging
 import socket
 import threading
@@ -62,11 +62,11 @@ class ADUtils(object):
         "S-1-5-12": ("Restricted Code", "GROUP"),
         "S-1-5-13": ("Terminal Server Users", "GROUP"),
         "S-1-5-14": ("Remote Interactive Logon", "GROUP"),
-        "S-1-5-15": ("This Organization ", "GROUP"),
-        "S-1-5-17": ("This Organization ", "GROUP"),
+        "S-1-5-15": ("This Organization", "GROUP"),
+        "S-1-5-17": ("IUSR", "USER"),
         "S-1-5-18": ("Local System", "USER"),
         "S-1-5-19": ("NT Authority", "USER"),
-        "S-1-5-20": ("NT Authority", "USER"),
+        "S-1-5-20": ("Network Service", "USER"),
         "S-1-5-80-0": ("All Services ", "GROUP"),
         "S-1-5-32-544": ("Administrators", "GROUP"),
         "S-1-5-32-545": ("Users", "GROUP"),
@@ -95,7 +95,8 @@ class ADUtils(object):
         "S-1-5-32-577": ("RDS Management Servers", "GROUP"),
         "S-1-5-32-578": ("Hyper-V Administrators", "GROUP"),
         "S-1-5-32-579": ("Access Control Assistance Operators", "GROUP"),
-        "S-1-5-32-580": ("Access Control Assistance Operators", "GROUP")
+        "S-1-5-32-580": ("Access Control Assistance Operators", "GROUP"),
+        "S-1-5-32-582": ("Storage Replica Administrators", "GROUP")
     }
 
     FUNCTIONAL_LEVELS = {
@@ -108,6 +109,9 @@ class ADUtils(object):
         6: "2012 R2",
         7: "2016"
     }
+
+    xml_sid_rex = re.compile('<UserId>(S-[0-9\-]+)</UserId>')
+    xml_logontype_rex = re.compile('<LogonType>([A-Za-z0-9]+)</LogonType>')
 
     @staticmethod
     def domain2ldap(domain):
@@ -182,45 +186,70 @@ class ADUtils(object):
         information used by BloodHound
         """
         resolved = {}
-        account = ''
         dn = ''
         domain = ''
-        if 'sAMAccountName' in entry['attributes']:
-            account = entry['attributes']['sAMAccountName']
-        if entry['attributes']['distinguishedName']:
-            dn = entry['attributes']['distinguishedName']
-            domain = ADUtils.ldap2domain(dn)
 
-        resolved['principal'] = unicode('%s@%s' % (account, domain)).upper()
-        if not 'sAMAccountName' in entry['attributes']:
-            # TODO: Fix foreign users
-            # requires cross-forest resolving
+        account = ADUtils.get_entry_property(entry, 'sAMAccountName', '')
+        dn = ADUtils.get_entry_property(entry, 'distinguishedName', '')
+        if dn != '':
+            domain = ADUtils.ldap2domain(dn)
+        resolved['objectid'] = ADUtils.get_entry_property(entry, 'objectSid', '')
+        resolved['principal'] = ('%s@%s' % (account, domain)).upper()
+        if not ADUtils.get_entry_property(entry, 'sAMAccountName'):
             if 'ForeignSecurityPrincipals' in dn:
                 resolved['principal'] = domain.upper()
                 resolved['type'] = 'foreignsecurityprincipal'
-                if 'name' in entry['attributes']:
+                ename = ADUtils.get_entry_property(entry, 'name')
+                if ename:
                     # Fix wellknown entries
-                    ename = entry['attributes']['name']
                     if ename in ADUtils.WELLKNOWN_SIDS:
                         name, sidtype = ADUtils.WELLKNOWN_SIDS[ename]
-                        resolved['type'] = sidtype.lower()
-                        resolved['principal'] = unicode('%s@%s' % (name, domain)).upper()
+                        resolved['type'] = sidtype.capitalize()
+                        resolved['principal'] = ('%s@%s' % (name, domain)).upper()
+                        # Well-known have the domain prefix since 3.0
+                        resolved['objectid'] = '%s-%s' % (domain.upper(), resolved['objectid'])
+                    else:
+                        # Foreign security principal
+                        resolved['objectid'] = ename
             else:
-                resolved['type'] = 'unknown'
+                resolved['type'] = 'Base'
         else:
-            accountType = entry['attributes']['sAMAccountType']
+            accountType = ADUtils.get_entry_property(entry, 'sAMAccountType')
             if accountType in [268435456, 268435457, 536870912, 536870913]:
-                resolved['type'] = 'group'
-            elif accountType in [805306369]:
-                resolved['type'] = 'computer'
+                resolved['type'] = 'Group'
+            elif ADUtils.get_entry_property(entry, 'msDS-GroupMSAMembership', default=b'', raw=True) != b'':
+                resolved['type'] = 'User'
                 short_name = account.rstrip('$')
-                resolved['principal'] = unicode('%s.%s' % (short_name, domain)).upper()
+                resolved['principal'] = ('%s@%s' % (short_name, domain)).upper()
+            elif accountType in [805306369]:
+                resolved['type'] = 'Computer'
+                short_name = account.rstrip('$')
+                resolved['principal'] = ('%s.%s' % (short_name, domain)).upper()
             elif accountType in [805306368]:
-                resolved['type'] = 'user'
+                resolved['type'] = 'User'
             elif accountType in [805306370]:
                 resolved['type'] = 'trustaccount'
             else:
-                resolved['type'] = 'domain'
+                resolved['type'] = 'Domain'
+
+        return resolved
+
+    @staticmethod
+    def resolve_sid_entry(entry, domain):
+        """
+        Convert LsarLookupSids entries to entries for the SID cache, which should match
+        the format from the resolve_ad_entry function.
+        """
+        resolved = {}
+        account = entry['Name']
+
+        resolved['principal'] = ('%s@%s' % (account, domain)).upper()
+        resolved['type'] = ADUtils.translateSidType(entry['Use']).lower()
+
+        # Computer accounts have a different type
+        if resolved['type'] == 'computer':
+            short_name = account.rstrip('$')
+            resolved['principal'] = ('%s.%s' % (short_name, domain)).upper()
 
         return resolved
 
@@ -260,8 +289,122 @@ class ADUtils(object):
         seconds = int(seconds)
         if seconds == 0:
             return 0
-        return (seconds - 116444736000000000) / 10000000
+        return int((seconds - 116444736000000000) / 10000000)
 
+    @staticmethod
+    def parse_task_xml(xml):
+        """
+        Parse scheduled task XML and extract the user and logon type with
+        regex. Is not a good way to parse XMLs but saves us the whole parsing
+        overhead.
+        """
+        res = ADUtils.xml_sid_rex.search(xml)
+        if not res:
+            return None
+        sid = res.group(1)
+        res = ADUtils.xml_logontype_rex.search(xml)
+        if not res:
+            return None
+        logon_type = res.group(1)
+        return (sid, logon_type)
+
+    @staticmethod
+    def ensure_string(data):
+        """
+        Sometimes properties can contain binary data. Since we can't assume encoding, make
+        sure it can be outputted as json
+        """
+        if isinstance(data, bytes):
+            data = repr(data)
+        return data
+
+
+class AceResolver(object):
+    """
+    This class resolves ACEs containing rights, acetype and a SID to Aces containing
+    BloodHound principals, which can be outputted to json.
+    This is mostly a wrapper around the sid resolver calls
+    """
+    def __init__(self, addomain, resolver):
+        self.addomain = addomain
+        self.resolver = resolver
+
+    def resolve_aces(self, aces):
+        aces_out = []
+        for ace in aces:
+            out = {
+                'RightName': ace['rightname'],
+                'IsInherited': ace['inherited']
+            }
+            # Is it a well-known sid?
+            if ace['sid'] in ADUtils.WELLKNOWN_SIDS:
+                out['PrincipalSID'] = u'%s-%s' % (self.addomain.domain.upper(), ace['sid'])
+                out['PrincipalType'] = ADUtils.WELLKNOWN_SIDS[ace['sid']][1].capitalize()
+            else:
+                try:
+                    linkitem = self.addomain.newsidcache.get(ace['sid'])
+                except KeyError:
+                    # Look it up instead
+                    # Is this SID part of the current domain? If not, use GC
+                    use_gc = not ace['sid'].startswith(self.addomain.domain_object.sid)
+                    ldapentry = self.resolver.resolve_sid(ace['sid'], use_gc)
+                    # Couldn't resolve...
+                    if not ldapentry:
+                        logging.debug('Could not resolve SID: %s', ace['sid'])
+                        # Fake it
+                        entry = {
+                            'type': 'Base',
+                            'objectid': ace['sid']
+                        }
+                    else:
+                        entry = ADUtils.resolve_ad_entry(ldapentry)
+                    linkitem = {
+                        "ObjectIdentifier": entry['objectid'],
+                        "ObjectType": entry['type'].capitalize()
+                    }
+                    # Entries are cached regardless of validity - unresolvable sids
+                    # are not likely to be resolved the second time and this saves traffic
+                    self.addomain.newsidcache.put(ace['sid'], linkitem)
+                out['PrincipalSID'] = ace['sid']
+                out['PrincipalType'] = linkitem['ObjectType']
+            aces_out.append(out)
+        return aces_out
+
+    def resolve_sid(self, sid):
+        # Resolve SIDs for SID history purposes
+        out = {}
+        # Is it a well-known sid?
+        if sid in ADUtils.WELLKNOWN_SIDS:
+            out['ObjectIdentifier'] = u'%s-%s' % (self.addomain.domain.upper(), sid)
+            out['ObjectType'] = ADUtils.WELLKNOWN_SIDS[sid][1].capitalize()
+        else:
+            try:
+                linkitem = self.addomain.newsidcache.get(sid)
+            except KeyError:
+                # Look it up instead
+                # Is this SID part of the current domain? If not, use GC
+                use_gc = not sid.startswith(self.addomain.domain_object.sid)
+                ldapentry = self.resolver.resolve_sid(sid, use_gc)
+                # Couldn't resolve...
+                if not ldapentry:
+                    logging.debug('Could not resolve SID: %s', sid)
+                    # Fake it
+                    entry = {
+                        'type': 'Base',
+                        'objectid':sid
+                    }
+                else:
+                    entry = ADUtils.resolve_ad_entry(ldapentry)
+                linkitem = {
+                    "ObjectIdentifier": entry['objectid'],
+                    "ObjectType": entry['type'].capitalize()
+                }
+                # Entries are cached regardless of validity - unresolvable sids
+                # are not likely to be resolved the second time and this saves traffic
+                self.addomain.newsidcache.put(sid, linkitem)
+            out['ObjectIdentifier'] = sid
+            out['ObjectType'] = linkitem['ObjectType']
+        return out
 
 class DNSCache(object):
     """
@@ -308,6 +451,10 @@ class SidCache(object):
     def put(self, entry, value):
         with self.lock:
             self._cache[entry] = value
+
+    # Overwrite cache from disk
+    def load(self, cache):
+        self._cache = cache
 
 class SamCache(SidCache):
     """

@@ -21,7 +21,8 @@
 # SOFTWARE.
 #
 ####################
-
+from bloodhound.ad.structures import LDAP_SID
+import logging
 """
 Domain trust
 """
@@ -38,6 +39,7 @@ class ADDomainTrust(object):
                    'TREAT_AS_EXTERNAL':0x00000040,
                    'USES_RC4_ENCRYPTION':0x00000080,
                    'CROSS_ORGANIZATION_NO_TGT_DELEGATION':0x00000200,
+                   'CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION': 0x00000800,
                    'PIM_TRUST':0x00000400}
 
     # Domain trust direction
@@ -54,30 +56,60 @@ class ADDomainTrust(object):
                   'UPLEVEL':0x02,
                   'MIT':0x03}
 
-    def __init__(self, source, destination, direction, trust_type, flags):
-        self.sourceDomain = source
+    # BloodHound trust types - deprecated
+    bh_trust_type = {
+        'ParentChild': 0,
+        'CrossLink': 1,
+        'Forest': 2,
+        'External': 3,
+        'Unknown':4
+    }
+    # BH4.1 mapping
+    trust_dir = {
+        0: 'Disabled',
+        1: 'Inbound',
+        2: 'Outbound',
+        3: 'Bidirectional'
+    }
+    def __init__(self, destination, direction, trust_type, flags, domainsid):
         self.destination_domain = destination
         self.direction = direction
         self.type = trust_type
         self.flags = flags
+        # Try catching empty SID
+        if domainsid:
+            self.domainsid = LDAP_SID(domainsid).formatCanonical()
+        else:
+            logging.debug('Domain %s has empty domain SID', self.destination_domain)
+            self.domainsid = ''
+
+    def has_flag(self, flag):
+        return self.flags & self.trust_flags[flag] == self.trust_flags[flag]
 
     def to_output(self):
-        if self.flags & self.trust_flags['WITHIN_FOREST']:
-            trust_type = 'ParentChild'
-        else:
-            trust_type = 'External'
-        if self.flags & self.trust_flags['NON_TRANSITIVE']:
-            is_transitive = False
-        else:
+        if self.has_flag('WITHIN_FOREST'):
+            trusttype = 'ParentChild'
             is_transitive = True
-
-        # SharpHound's enum is just one index off the actual MS flag
-        trust_direction = self.direction - 1
+            sid_filtering = self.has_flag('QUARANTINED_DOMAIN')
+        elif self.has_flag('FOREST_TRANSITIVE'):
+            trusttype = 'Forest'
+            is_transitive = True
+            sid_filtering = True
+        elif self.has_flag('TREAT_AS_EXTERNAL') or self.has_flag('CROSS_ORGANIZATION'):
+            trusttype = 'External'
+            is_transitive = False
+            sid_filtering = True
+        else:
+            trusttype = 'Unknown'
+            is_transitive = not self.has_flag('NON_TRANSITIVE')
+            sid_filtering = True
 
         out = {
-            "TargetName": self.destination_domain,
+            "TargetDomainName": self.destination_domain.upper(),
+            "TargetDomainSid": self.domainsid,
             "IsTransitive": is_transitive,
-            "TrustDirection": trust_direction,
-            "TrustType": trust_type
+            "TrustDirection": self.trust_dir[self.direction],
+            "TrustType": trusttype,
+            "SidFilteringEnabled": sid_filtering
         }
         return out
