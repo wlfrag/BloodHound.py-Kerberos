@@ -1,6 +1,38 @@
+
+## fork of fork
+
+
+
+![image](https://github.com/wlfrag/BloodHound.py-Kerberos/assets/43529877/30e6b1de-cea3-4241-b52f-22d7b78231af)
+
+
+
+
+
+
+
+
+
+
+
 ## What is this fork?!
 
 I needed bloodhound with Kerberos support and found this [comment](https://github.com/fox-it/BloodHound.py/pull/77#issuecomment-1040080895). Turns out there was a branch supporting Kerberos auth all along! I took the liberty to merge this branch in to master to get them sweet BloodHound 4.2+ exports. All credit goes to the people who actually wrote the code:)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ## Note
 
