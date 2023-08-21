@@ -226,8 +226,8 @@ class ADAuthentication(object):
 
         tgt_principal = Principal()
         tgt_principal.from_asn1(decoded_tgt, 'crealm', 'cname')
-        expected_principal = '%s@%s' % (self.username.lower(),
-                                        self.domain.upper())
+        expected_principal = '%s@%s' % (self.username,
+                                        self.domain))
         if expected_principal != str(tgt_principal):
             logging.warning('Username in ccache file does not match supplied username! %s != %s',
                             tgt_principal, expected_principal)
